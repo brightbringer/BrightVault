@@ -7,6 +7,7 @@
 <p align="center">
   <strong>Cofre pessoal criptografado em nuvem via vídeo óptico de alta densidade (YouTube)</strong><br/>
   Executável único para Windows · Criptografia Pós-Quântica em Cascata · Chaves por Pasta · Atualização Automática
+  Este é um projeto aberto de estudos científicos sobre a compilação e resistência de dados após compressão e descompressão.
 </p>
 
 ---
@@ -29,7 +30,7 @@ Você **não precisa instalar Go, Python nem dependências manualmente**:
 - **Criptografia Pós-Quântica em Cascata (*Zero-Knowledge*):** `Argon2id` + `HKDF-SHA512` + **AES-256-GCM + XChaCha20-Poly1305** com chaves independentes por pasta e por vídeo.
 - **Chave própria por pasta + Compartilhamento seletivo:** cada pasta possui sua própria chave criptográfica guardada no seu cofre (aberta automaticamente pela sua senha mestra). Gere códigos de compartilhamento de pasta (`btfolder`) contendo apenas links e chaves dos arquivos daquela pasta.
 - **Envio de Vídeos Ópticos (Dados Brutos ou Vídeo Artístico):**
-  - Perfis de dados de alta densidade (`y8-gray`, `y6-gray`, `y4-gray`, `ycbcr-dual`, etc.) em até **8K**.
+  - Perfis de dados de alta densidade (`y8-gray`, `y6-gray`, `y4-gray`, `ycbcr-dual`, etc.) em até **4K**.
   - Modo **Vídeo Artístico / Stealth** com vídeo base opcional ou padrões fractais/generativos + trilha sonora generativa ou local.
   - Escolha o **nome personalizado do vídeo** antes de enviar (e renomeie direto no YouTube pela aba **🎬 Meus Vídeos**).
   - Privacidade configurável: **Público**, **Não Listado** ou **Privado**.
