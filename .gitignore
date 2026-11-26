@@ -1,0 +1,11 @@
+# Arquivos temporários, logs e dados locais do usuário
+*.log
+*.tmp
+*.bak
+*.old
+*.ytcat
+*.mp4
+*.mkv
+*.webm
+.DS_Store
+Thumbs.db
