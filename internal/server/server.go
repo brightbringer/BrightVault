@@ -66,6 +66,8 @@ type Server struct {
 	shutdownOnce     sync.Once
 	lastHeartbeat    atomic.Int64
 	clientConnected  atomic.Bool
+	activeSSEClients atomic.Int32
+	hadSSEClient     atomic.Bool
 	explicitlyLocked atomic.Bool
 	activeDialogs    atomic.Int32
 }
@@ -166,8 +168,17 @@ func (s *Server) Start(addr string) (net.Listener, string, error) {
 				if !s.clientConnected.Load() {
 					continue
 				}
+				// Never shut down while any window holds an open SSE stream (immune to Edge/Chrome background timer throttling!)
+				if s.activeSSEClients.Load() > 0 {
+					s.lastHeartbeat.Store(time.Now().Unix())
+					continue
+				}
+				grace := 5 * time.Minute
+				if s.hadSSEClient.Load() {
+					grace = 20 * time.Second
+				}
 				last := s.lastHeartbeat.Load()
-				if last > 0 && time.Since(time.Unix(last, 0)) > 45*time.Second && !s.hasRunningJobs() && s.activeDialogs.Load() == 0 {
+				if last > 0 && time.Since(time.Unix(last, 0)) > grace && !s.hasRunningJobs() && s.activeDialogs.Load() == 0 {
 					s.TriggerShutdown()
 					return
 				}
@@ -253,6 +264,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/update/check", s.handleUpdateCheck)
 	s.mux.HandleFunc("/api/update/apply", s.handleUpdateApply)
 	s.mux.HandleFunc("/api/heartbeat", s.handleHeartbeat)
+	s.mux.HandleFunc("/api/events", s.handleEvents)
 	s.mux.HandleFunc("/api/shutdown", s.handleShutdown)
 	s.mux.HandleFunc("/api/system/pick-folder", s.handlePickFolder)
 	s.mux.HandleFunc("/api/system/pick-files", s.handlePickFiles)
@@ -390,6 +402,43 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	s.clientConnected.Store(true)
 	s.lastHeartbeat.Store(time.Now().Unix())
 	writeJSON(w, map[string]any{"ok": true})
+}
+
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	s.clientConnected.Store(true)
+	s.hadSSEClient.Store(true)
+	s.activeSSEClients.Add(1)
+	s.lastHeartbeat.Store(time.Now().Unix())
+	defer func() {
+		s.activeSSEClients.Add(-1)
+		s.lastHeartbeat.Store(time.Now().Unix())
+	}()
+	_, _ = w.Write([]byte(": connected\n\n"))
+	flusher.Flush()
+	ticker := time.NewTicker(20 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-s.shutdownCh:
+			return
+		case <-ticker.C:
+			s.lastHeartbeat.Store(time.Now().Unix())
+			if _, err := w.Write([]byte(": ping\n\n")); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
 }
 
 func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
@@ -1684,6 +1733,7 @@ type encodeJobOpts struct {
 	MusicSeed        uint64   // optional custom melody seed
 	DurationSource   string   // "files" (default), "video", "audio"
 	PaddingMode      string   // "auto" (auto-soften + uniform texture), "spread", "start"
+	CrossFECMode     string   // "auto", "max" (K=6,M=2), "high" (K=8,M=2), "off"
 	PublicPasswords  []string // non-empty => Public Share mode (1..5 layered passwords, zero vault DEK!)
 }
 
@@ -1788,6 +1838,7 @@ func (s *Server) handleUploadPath(w http.ResponseWriter, r *http.Request) {
 		MusicSeed        uint64   `json:"music_seed"`
 		DurationSource   string   `json:"duration_source"`
 		PaddingMode      string   `json:"padding_mode"`
+		CrossFECMode     string   `json:"cross_fec_mode"`
 		PublicPasswords  []string `json:"public_passwords"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Path) == "" {
@@ -1822,6 +1873,7 @@ func (s *Server) handleUploadPath(w http.ResponseWriter, r *http.Request) {
 		MusicSeed:        req.MusicSeed,
 		DurationSource:   req.DurationSource,
 		PaddingMode:      req.PaddingMode,
+		CrossFECMode:     req.CrossFECMode,
 		PublicPasswords:  req.PublicPasswords,
 	})
 	writeJSON(w, job)
@@ -1852,6 +1904,7 @@ func (s *Server) handleUploadPaths(w http.ResponseWriter, r *http.Request) {
 		MusicSeed        uint64   `json:"music_seed"`
 		DurationSource   string   `json:"duration_source"`
 		PaddingMode      string   `json:"padding_mode"`
+		CrossFECMode     string   `json:"cross_fec_mode"`
 		PublicPasswords  []string `json:"public_passwords"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Paths) == 0 {
@@ -1898,6 +1951,7 @@ func (s *Server) handleUploadPaths(w http.ResponseWriter, r *http.Request) {
 		MusicSeed:        req.MusicSeed,
 		DurationSource:   req.DurationSource,
 		PaddingMode:      req.PaddingMode,
+		CrossFECMode:     req.CrossFECMode,
 		PublicPasswords:  req.PublicPasswords,
 	})
 	writeJSON(w, job)
@@ -1941,6 +1995,7 @@ func (s *Server) handleUploadFiles(w http.ResponseWriter, r *http.Request) {
 		musicSeed        uint64
 		durationSource   string
 		paddingMode      string
+		crossFECMode     string
 		publicPasswords  []string
 		relPaths         []string
 		modTimes         []string
@@ -2036,6 +2091,8 @@ func (s *Server) handleUploadFiles(w http.ResponseWriter, r *http.Request) {
 				durationSource = val
 			case "padding_mode":
 				paddingMode = val
+			case "cross_fec_mode":
+				crossFECMode = val
 			case "public_passwords":
 				var pws []string
 				if json.Unmarshal([]byte(val), &pws) == nil {
@@ -2098,6 +2155,7 @@ func (s *Server) handleUploadFiles(w http.ResponseWriter, r *http.Request) {
 		MusicSeed:        musicSeed,
 		DurationSource:   durationSource,
 		PaddingMode:      paddingMode,
+		CrossFECMode:     crossFECMode,
 		PublicPasswords:  publicPasswords,
 	})
 	writeJSON(w, job)
@@ -2358,6 +2416,7 @@ func (s *Server) startEncodeJobOpts(inputs []packer.InputFile, req encodeJobOpts
 			},
 			TargetFrames: targetFrames,
 			PaddingMode:  req.PaddingMode,
+			CrossFECMode: req.CrossFECMode,
 			OnProgress: func(frame, total int) {
 				pct := 35 + (frame*50)/maxInt(total, 1)
 				elapsed := time.Since(encStart)

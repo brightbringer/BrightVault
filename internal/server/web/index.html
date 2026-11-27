@@ -83,6 +83,9 @@
       <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);text-align:center">
         <button type="button" class="btn full" id="btn-auth-public-dl" data-i18n="btn_public_dl_auth" style="justify-content:center">🌐 Download Público (Link + Senha ou Código de Pasta)</button>
       </div>
+      <div class="hint-box" style="margin-top:10px;font-size:11px;line-height:1.45;text-align:left">
+        <b>🔬 Pesquisa Científica &amp; White-Hat:</b> O <b>BrightVault</b> é um projeto aberto de estudo sobre integridade e sobrevivência de dados binários após compressão severa em codecs de vídeo (H.264/VP9/AV1), códigos corretores de erros Reed-Solomon (intra-frame e inter-frame) e criptografia defensiva local. Todo processamento é 100% local e educacional.
+      </div>
       <div id="auth-tools-status" class="auth-footer muted"></div>
     </div>
   </div>
@@ -95,7 +98,7 @@
         <img src="/favicon.png" class="logo-sm-img" alt="BrightVault">
         <strong id="vault-title">BrightVault</strong>
         <span class="badge" id="stats-badge">0 arquivos</span>
-        <button type="button" class="ver-pill" id="bv-update-btn" title="Versão do BrightVault — clique para verificar ou atualizar pelo GitHub">v0.7</button>
+        <button type="button" class="ver-pill" id="bv-update-btn" title="Versão do BrightVault — clique para verificar ou atualizar pelo GitHub">v0.701</button>
       </div>
 
       <div class="topbar-actions">
@@ -484,7 +487,7 @@
                     <option value="stealth-stars">✨ Máscara de Estrelas Tela Inteira (3b/estrela · 0% erro H.264/VP9 · até 221 MB/h 4K)</option>
                     <option value="stealth-rain">🌧️ Filtro de Chuva Tela Inteira (2b/gota · Cega · até 258 MB/h 4K)</option>
                     <option value="stealth-vhs">📼 Fita VHS Analógica (Linhas 32×8 · 0% erro H.264/VP9 · até 276 MB/h 4K)</option>
-                    <option value="stealth-film">🎬 Cinema de Rolo 35mm (Grão Hanning Orgânico · Zero Grade · até 276 MB/h 4K)</option>
+                    <option value="stealth-film">🎬 Cinema de Rolo 35mm (Grão Orgânico · sensível a baixo bitrate YT — p/ 0% erro use Estrelas ou VHS)</option>
                   </optgroup>
                   <optgroup label="🎨 Padrões Artísticos &amp; Alta Densidade">
                     <option value="art-fullres" selected>🌌 Relevo Nítido Full-Res 2-bit (±40/±14 s/ pixelar · p/ Efeitos &amp; Fractais · ~6,9×–10×)</option>
@@ -728,6 +731,15 @@
                 <option value="public">🌍 Público (visível para todos no YouTube)</option>
                 <option value="unlisted">🔗 Não Listado (oculto · baixa sem cookies)</option>
                 <option value="private">🔒 Privado (apenas sua conta)</option>
+              </select>
+            </div>
+            <div class="row-inline" style="align-items:center">
+              <span class="muted" style="font-size:11.5px;white-space:nowrap">🛡️ Blindagem YT:</span>
+              <select id="up-cross-fec" style="padding:5px 8px;font-size:12px" title="Paridade Cross-Frame RS entre partições (reconstrói frames perdidos se o YouTube derrubar o bitrate)">
+                <option value="auto" selected>⚡ Automática (ativa nos modos Stealth/Arte ≥24 frames)</option>
+                <option value="max">🛡️ Máxima (K=6, M=2 · +33% · aguenta 25% do vídeo destruído)</option>
+                <option value="high">🛡️ Alta (K=8, M=2 · +25% · aguenta 20% ou 2 apagões de 10%)</option>
+                <option value="off">📦 Desligada (menor duração/tamanho possível)</option>
               </select>
             </div>
           </div>
@@ -1065,6 +1077,17 @@
                 </select>
               </div>
             </div>
+          </div>
+
+          <!-- SOBRE: INTUITO CIENTÍFICO & WHITE-HAT -->
+          <div class="set-group" style="border-color:rgba(56,189,248,.35)">
+            <div class="set-group-title">🔬 Intuito Científico &amp; Pesquisa White-Hat (BrightVault v0.701)</div>
+            <p class="muted sm-txt" style="line-height:1.5;margin-bottom:6px">
+              O <b>BrightVault</b> (junto ao navegador <b>BrightWeb</b>) é um projeto aberto de pesquisa científica e engenharia experimental voltado ao estudo da resistência, preservação e recuperação de dados binários através de canais ruidosos com compressão severa com perdas — como codecs de vídeo modernos (H.264, VP9 e AV1) sob transcodificação, redução de bitrate variável (VBR) e subamostragem cromática (<code>YUV420p</code>). A pesquisa explora teoria da informação aplicada, códigos corretores de erros Reed-Solomon intra-frame e inter-frame (<i>Cross-Frame RS</i>), esteganografia óptica resiliente e compressão híbrida por camadas.
+            </p>
+            <p class="muted sm-txt" style="line-height:1.5;margin-bottom:0">
+              Todo o ecossistema segue princípios estritos de segurança <b>White-Hat</b>, com código aberto, transparência total e foco educacional e defensivo: toda a criptografia (<i>Argon2id + HKDF-SHA512 + AES-256-GCM + XChaCha20-Poly1305</i>) ocorre exclusivamente no computador do usuário, sem servidores centrais ou telemetria oculta. O objetivo é avançar o conhecimento aberto sobre resiliência de dados e segurança defensiva, sempre incentivando o uso ético e o respeito aos Termos de Serviço das plataformas.
+            </p>
           </div>
 
           <!-- GRUPO 1: CODIFICAÇÃO -->

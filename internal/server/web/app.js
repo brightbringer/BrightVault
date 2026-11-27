@@ -99,14 +99,23 @@ function startHeartbeat() {
       document.body.prepend(div);
     }
   };
+  if (typeof EventSource !== 'undefined' && !state.sseConn) {
+    state.sseConn = new EventSource('/api/events', { withCredentials: true });
+    state.sseConn.onopen = () => {
+      failCount = 0;
+      const b = $('conn-lost-banner');
+      if (b) b.remove();
+    };
+  }
   ping();
-  state.heartbeatTimer = setInterval(ping, 5000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) ping(); });
+  state.heartbeatTimer = setInterval(ping, 12000);
 }
 
 function renderUpdatePill(u) {
   const btn = $('bv-update-btn');
   if (!btn) return;
-  const cur = (u && u.current_version) || state.status?.version || '0.7';
+  const cur = (u && u.current_version) || state.status?.version || '0.701';
   state.updateStatus = u || { current_version: cur };
   if (u && u.update_available && u.latest_version) {
     btn.classList.add('outdated');
@@ -132,7 +141,7 @@ async function refreshStatus() {
   try {
     state.status = await api('/api/status');
     const t = state.status.tools;
-    $('auth-tools-status').textContent = `BrightVault v${state.status.version || '0.7'} · FFmpeg: ${t.has_ffmpeg ? 'OK' : 'Ausente'} · yt-dlp: ${t.has_yt_dlp ? 'OK' : 'Ausente'} · JS: ${t.has_js_runtime ? 'OK' : 'Ausente'}`;
+    $('auth-tools-status').textContent = `BrightVault v${state.status.version || '0.701'} · FFmpeg: ${t.has_ffmpeg ? 'OK' : 'Ausente'} · yt-dlp: ${t.has_yt_dlp ? 'OK' : 'Ausente'} · JS: ${t.has_js_runtime ? 'OK' : 'Ausente'}`;
     renderUpdatePill(state.status.update);
     if (!state.updatePollScheduled) {
       state.updatePollScheduled = true;
@@ -304,14 +313,21 @@ function isAV1Effective(prof, vcodec) {
   return resolveCodecTag(prof, vcodec).startsWith('AV1');
 }
 
-function computeComboMetrics(res, prof, fps, vcodec = 'auto', maskIntensity = 'balanced', hideHeader = false) {
-  // Empirical 0..10 attribute scores calibrated from our 4K / 2K / 1080p / 720p + AV1/VP9/H.264 + Mask Intensity benchmarks!
-  // Safety minimum threshold without data loss under YouTube recompression = 6.0/10.
+function isStaticImagePath(p) {
+  const clean = String(p || '').trim().replace(/^["']|["']$/g, '').split(/[?#]/)[0].toLowerCase();
+  return /\.(jpe?g|png|webp|bmp|tiff?|avif)$/i.test(clean);
+}
+
+function computeComboMetrics(res, prof, fps, vcodec = 'auto', maskIntensity = 'balanced', hideHeader = false, crossFEC = 'auto', hostSource = '') {
+  // Empirical 0..10 attribute scores calibrated from our 4K / 2K / 1080p / 720p + AV1/VP9/H.264 + Mask Intensity + Static Image benchmarks!
+  // Base safety minimum without Cross-Frame RS = 6.0/10 (rec 7.0/10); with Cross-Frame RS active = 5.0/10 (rec 6.0/10).
   fps = Number(fps) || 10;
   let size = 7, up = 7, dl = 7, safe = 8, art = 1, estUp = 5.3, estDl = 6.5;
   const tag = resolveCodecTag(prof, vcodec);
   const useAV1 = tag.startsWith('AV1');
   const useVP9 = tag.startsWith('VP9');
+  const effHost = String(hostSource || '').trim();
+  const isStaticImg = isStaticImagePath(effHost);
   const clamp10 = (v) => Math.max(1, Math.min(10, Math.round(v * 10) / 10));
   const clampInt = (v) => Math.max(1, Math.min(10, Math.round(v)));
   const fpsScale = (baseFPS, factorPerDouble) => Math.pow(baseFPS / Math.max(1, fps), factorPerDouble);
@@ -392,7 +408,7 @@ function computeComboMetrics(res, prof, fps, vcodec = 'auto', maskIntensity = 'b
         'stealth-vhs':   { upH: 75,  dl: 65,  safe: 9.8, art: 9.8 },
         'stealth-stars': { upH: 78,  dl: 64,  safe: 9.9, art: 10.0 },
         'stealth-rain':  { upH: 92,  dl: 78,  safe: 9.5, art: 10.0 },
-        'stealth-film':  { upH: 85,  dl: 70,  safe: 9.1, art: 10.0 },
+        'stealth-film':  { upH: 85,  dl: 70,  safe: 7.4, art: 10.0 },
       }[prof];
       const stAmpSafe = mi === 'max' ? 0.8 : mi === 'strong' ? 0.4 : mi === 'subtle' ? -0.6 : 0;
       const stAmpArt  = mi === 'max' ? -1.2 : mi === 'strong' ? -0.5 : mi === 'subtle' ? 0.4 : 0;
@@ -491,13 +507,58 @@ function computeComboMetrics(res, prof, fps, vcodec = 'auto', maskIntensity = 'b
   } else {
     art = 1; size = 4; up = 4; dl = 4; safe = clamp10(8.0 - fpsSafePen - resSafePen); estUp = 9.0; estDl = 13.0;
   }
-  return { size, up, dl, safe, art, estUp, estDl, codecLabel: tag, fps, safeMin: 6.0, safeRec: 7.0, canHideHdr, effHideHdr };
+  // Static Image Background effect (real YouTube VP9/H.264 VBR behavior!):
+  // Zero motion across the video lets YouTube drop bitrate aggressively (~1.4 Mbps in 1440p),
+  // which compresses smaller (+size) but hurts fine high-frequency grain severely (especially stealth-film 16x16)!
+  let staticImgWarn = '';
+  if (isStaticImg) {
+    estUp = +(estUp * 0.84).toFixed(1);
+    estDl = +(estDl * 0.88).toFixed(1);
+    size = clampInt(size + 0.6);
+    if (prof === 'stealth-film') {
+      safe = clamp10(safe - 2.4);
+      staticImgWarn = '🖼️ <b>Imagem estática + Cinema 35mm:</b> o YouTube derruba o bitrate em fundos parados e apaga o grão fino 16×16! Use <b>Estrelas (stealth-stars)</b>, <b>VHS (stealth-vhs)</b> ou um <b>vídeo com movimento</b>.';
+    } else if (prof === 'stealth-rain') {
+      safe = clamp10(safe - 1.0);
+    } else if (prof === 'stealth-stars' || prof === 'stealth-vhs') {
+      safe = clamp10(safe - 0.3);
+    } else if (prof === 'art-stego') {
+      safe = clamp10(safe - 0.8);
+    } else if (prof.startsWith('art-') || prof.startsWith('video-')) {
+      safe = clamp10(safe - 0.5);
+    }
+  }
+
+  // Parallel Decode 4x + Parallel yt-dlp (-N 8) & Partitioned Encode 4x (VP9/AV1) speed boosts
+  dl = clampInt(dl + 1.2);
+  if (useVP9 || useAV1) {
+    up = clampInt(up + 0.8);
+  }
+  // Dynamic Cross-Frame RS Shield effect (does NOT reduce Art score — only adds parity frames & lowers min safe threshold!)
+  const isArtOrStealth = prof.startsWith('stealth-') || prof.startsWith('art-') || prof.startsWith('video-');
+  const cfMode = (crossFEC || 'auto').toLowerCase();
+  let cfActive = false, cfOverhead = 1.0, cfTag = '';
+  if (cfMode === 'max') {
+    cfActive = true; cfOverhead = 1.33; cfTag = '🛡️ Blindagem Máxima (K=6,M=2 · 25% apagão)';
+  } else if (cfMode === 'high') {
+    cfActive = true; cfOverhead = 1.25; cfTag = '🛡️ Blindagem Alta (K=8,M=2 · 20% apagão)';
+  } else if (cfMode === 'auto' && isArtOrStealth) {
+    cfActive = true; cfOverhead = 1.33; cfTag = '🛡️ Blindagem Auto (K=6,M=2 · 25% apagão)';
+  }
+  const safeMin = cfActive ? 5.0 : 6.0;
+  const safeRec = cfActive ? 6.0 : 7.0;
+  if (cfActive) {
+    estUp = +(estUp * cfOverhead).toFixed(1);
+    estDl = +(estDl * cfOverhead).toFixed(1);
+    size = clampInt(size - (cfOverhead > 1.3 ? 0.8 : 0.5));
+  }
+  return { size, up, dl, safe, art, estUp, estDl, codecLabel: tag, fps, safeMin, safeRec, canHideHdr, effHideHdr, cfActive, cfTag, isStaticImg, staticImgWarn };
 }
 
-function renderAttrBars(containerId, res, prof, fps, vcodec = 'auto', maskIntensity = 'balanced', hideHeader = false) {
+function renderAttrBars(containerId, res, prof, fps, vcodec = 'auto', maskIntensity = 'balanced', hideHeader = false, crossFEC = 'auto', hostSource = '') {
   const el = $(containerId);
   if (!el) return;
-  const m = computeComboMetrics(res, prof, fps || 10, vcodec, maskIntensity, hideHeader);
+  const m = computeComboMetrics(res, prof, fps || 10, vcodec, maskIntensity, hideHeader, crossFEC, hostSource);
   const barColor = (v, isSafe) => {
     if (isSafe) return v >= m.safeRec ? '#22c55e' : v >= m.safeMin ? '#f59e0b' : '#ef4444';
     return v >= 8 ? '#22c55e' : v >= 5 ? '#38bdf8' : v >= 3 ? '#f59e0b' : '#ef4444';
@@ -511,23 +572,26 @@ function renderAttrBars(containerId, res, prof, fps, vcodec = 'auto', maskIntens
     ['🎨 Nível Artístico', m.art, false],
   ];
   const safeBadge = m.safe >= m.safeRec
-    ? `<span style="color:#4ade80;font-weight:600">✅ Recomendado (≥${m.safeRec}/10 — 0 perda mesmo sob compressão severa)</span>`
+    ? `<span style="color:#4ade80;font-weight:600">✅ Recomendado (≥${m.safeRec.toFixed(1).replace('.', ',')}/10${m.cfActive ? ' com Blindagem Cross-Frame' : ' — 0 perda mesmo sob compressão severa'})</span>`
     : m.safe >= m.safeMin
-      ? `<span style="color:#fbbf24;font-weight:600">⚠️ Zona mínima (${m.safeMin}–${m.safeRec}/10) — passa em bitrate normal, pouca folga sob compressão severa</span>`
-      : `<span style="color:#f87171;font-weight:700">❌ Abaixo do mínimo (${m.safeMin}/10) — risco real de perda de dados no YouTube!</span>`;
+      ? `<span style="color:#fbbf24;font-weight:600">⚠️ Zona mínima (${m.safeMin.toFixed(1).replace('.', ',')}–${m.safeRec.toFixed(1).replace('.', ',')}/10) — passa em bitrate normal${m.cfActive ? ' (protegido contra apagões até 25%)' : ', pouca folga sob compressão severa'}</span>`
+      : `<span style="color:#f87171;font-weight:700">❌ Abaixo do mínimo (${m.safeMin.toFixed(1).replace('.', ',')}/10) — risco real de perda de dados no YouTube!</span>`;
   const hdrTag = m.canHideHdr
     ? (m.effHideHdr ? ' · 🙈 <b>Sem barra P&amp;B</b> (tela cheia limpa)' : ' · ▬ <b>Com barra P&amp;B</b> (+segurança cabeçalho)')
     : '';
+  const cfHtml = m.cfTag ? ` · <b>${m.cfTag}</b>` : '';
+  const staticTag = m.isStaticImg ? ' · 🖼️ <b>Fundo Estático</b> (YouTube reduz bitrate)' : '';
+  const staticWarnHtml = m.staticImgWarn ? `<div style="margin-top:4px;color:#fca5a5;font-weight:600">${m.staticImgWarn}</div>` : '';
   el.innerHTML = rows.map(([lbl, val, isSafe]) => `
     <div class="attr-row" style="${isSafe ? 'margin-top:8px' : ''}">
       <span class="attr-lbl">${lbl}</span>
       <div class="attr-track">
         <div class="attr-fill" style="width:${val * 10}%;background:${barColor(val, isSafe)}"></div>
-        ${isSafe ? `<div class="attr-min-mark" style="left:${m.safeMin * 10}%" title="Nível mínimo (${m.safeMin}/10) — abaixo disso há risco real de perda"></div><div class="attr-rec-mark" style="left:${m.safeRec * 10}%" title="Nível recomendado (${m.safeRec}/10) — margem segura mesmo sob compressão severa"></div>` : ''}
+        ${isSafe ? `<div class="attr-min-mark" style="left:${m.safeMin * 10}%" data-lbl="${m.safeMin} Mín" title="Nível mínimo (${m.safeMin}/10) — abaixo disso há risco real de perda"></div><div class="attr-rec-mark" style="left:${m.safeRec * 10}%" data-lbl="${m.safeRec} Rec" title="Nível recomendado (${m.safeRec}/10) — margem segura mesmo sob compressão severa"></div>` : ''}
       </div>
       <span class="attr-val" style="${isSafe ? (val < m.safeMin ? 'color:#f87171' : val < m.safeRec ? 'color:#fbbf24' : 'color:#4ade80') : ''}">${fmtScore(val)}/10</span>
     </div>`).join('') +
-    `<div class="attr-summary">📊 <b>${m.codecLabel}</b> · <b>${res.toUpperCase()}</b> · <b>${m.fps} FPS</b>${hdrTag} · p/ <b>1 GB</b>: <b>~${m.estUp.toFixed(1)} GB</b> up · <b>~${m.estDl.toFixed(1)} GB</b> down<br>${safeBadge}</div>`;
+    `<div class="attr-summary">📊 <b>${m.codecLabel}</b> · <b>${res.toUpperCase()}</b> · <b>${m.fps} FPS</b>${hdrTag}${cfHtml}${staticTag} · p/ <b>1 GB</b>: <b>~${m.estUp.toFixed(1)} GB</b> up · <b>~${m.estDl.toFixed(1)} GB</b> down<br>${safeBadge}${staticWarnHtml}</div>`;
 }
 
 function updateProfileDesc(selectId, descId) {
@@ -2523,7 +2587,7 @@ function bindEvents() {
     const exact = opts.find(o => o.v === prev);
     const rec = opts.find(o => o.rec) || opts[0];
     $('up-fps').value = String(exact ? exact.v : rec.v);
-    renderAttrBars('up-attr-bars', res, prof, Number($('up-fps').value), $('up-vcodec').value);
+    renderAttrBars('up-attr-bars', res, prof, Number($('up-fps').value), $('up-vcodec').value, 'balanced', false, $('up-cross-fec')?.value || 'auto');
   };
 
   const refreshCarrierUI = (preferredFPS = null) => {
@@ -2563,7 +2627,7 @@ function bindEvents() {
       $('up-hide-header-row').style.opacity = canHide ? '1' : '0.45';
     }
     updateProfileDesc('up-carrier-profile', 'up-carrier-prof-desc');
-    renderAttrBars('up-carrier-attr-bars', res, prof, Number($('up-carrier-fps').value), $('up-carrier-vcodec').value, $('up-mask-intensity')?.value || 'balanced', !!$('up-hide-header')?.checked);
+    renderAttrBars('up-carrier-attr-bars', res, prof, Number($('up-carrier-fps').value), $('up-carrier-vcodec').value, $('up-mask-intensity')?.value || 'balanced', !!$('up-hide-header')?.checked, $('up-cross-fec')?.value || 'auto', $('up-host-video')?.value || '');
     updateStylePreviewGIF();
     refreshCapacityMeter(false);
   };
@@ -2621,10 +2685,10 @@ function bindEvents() {
   $('up-resolution').onchange = () => { refreshDynamicFPS(); highlightActivePreset(); };
   $('up-profile').onchange = () => { updateProfileDesc('up-profile', 'up-prof-desc'); refreshDynamicFPS(); highlightActivePreset(); };
   $('up-vcodec').onchange = () => {
-    renderAttrBars('up-attr-bars', $('up-resolution').value, $('up-profile').value, Number($('up-fps').value), $('up-vcodec').value);
+    renderAttrBars('up-attr-bars', $('up-resolution').value, $('up-profile').value, Number($('up-fps').value), $('up-vcodec').value, 'balanced', false, $('up-cross-fec')?.value || 'auto');
   };
   const onUpFPSChange = () => {
-    renderAttrBars('up-attr-bars', $('up-resolution').value, $('up-profile').value, Number($('up-fps').value), $('up-vcodec').value);
+    renderAttrBars('up-attr-bars', $('up-resolution').value, $('up-profile').value, Number($('up-fps').value), $('up-vcodec').value, 'balanced', false, $('up-cross-fec')?.value || 'auto');
     highlightActivePreset();
   };
   $('up-fps').onchange = onUpFPSChange;
@@ -2648,13 +2712,19 @@ function bindEvents() {
   $('up-carrier-res').onchange = () => refreshCarrierUI();
   $('up-carrier-vcodec').onchange = () => refreshCarrierUI();
   const onCarrierFPSChange = () => {
-    renderAttrBars('up-carrier-attr-bars', $('up-carrier-res').value, $('up-carrier-profile').value, Number($('up-carrier-fps').value), $('up-carrier-vcodec').value, $('up-mask-intensity')?.value || 'balanced', !!$('up-hide-header')?.checked);
+    renderAttrBars('up-carrier-attr-bars', $('up-carrier-res').value, $('up-carrier-profile').value, Number($('up-carrier-fps').value), $('up-carrier-vcodec').value, $('up-mask-intensity')?.value || 'balanced', !!$('up-hide-header')?.checked, $('up-cross-fec')?.value || 'auto', $('up-host-video')?.value || '');
     refreshCapacityMeter(false);
   };
   $('up-carrier-fps').onchange = onCarrierFPSChange;
   $('up-carrier-fps').oninput = onCarrierFPSChange;
   if ($('up-mask-intensity')) $('up-mask-intensity').onchange = () => { onCarrierFPSChange(); updateStylePreviewGIF(); };
   if ($('up-hide-header')) $('up-hide-header').onchange = () => { onCarrierFPSChange(); updateStylePreviewGIF(); };
+  if ($('up-cross-fec')) {
+    $('up-cross-fec').onchange = () => {
+      onUpFPSChange();
+      onCarrierFPSChange();
+    };
+  }
   $('up-art-theme').onchange = () => {
     const theme = $('up-art-theme').value;
     const hasHost = ($('up-host-video')?.value.trim() || '') !== '';
@@ -2945,6 +3015,7 @@ function bindEvents() {
         music_seed: isCarrier ? (state.musicSeed || 0) : 0,
         duration_source: isCarrier ? $('up-duration-source').value : 'files',
         padding_mode: isCarrier ? ($('up-padding-mode')?.value || 'auto') : 'start',
+        cross_fec_mode: $('up-cross-fec')?.value || 'auto',
         public_passwords: publicPasswords
       };
 
@@ -3686,7 +3757,7 @@ function bindEvents() {
       const btn = $('bv-update-btn');
       const u = state.updateStatus;
       if (u && u.update_available && u.latest_version) {
-        if (!confirm(`Atualizar BrightVault automaticamente de v${u.current_version || '0.7'} para v${u.latest_version}?\n\nO programa irá baixar a nova versão do GitHub e reiniciar automaticamente.`)) return;
+        if (!confirm(`Atualizar BrightVault automaticamente de v${u.current_version || '0.701'} para v${u.latest_version}?\n\nO programa irá baixar a nova versão do GitHub e reiniciar automaticamente.`)) return;
         btn.disabled = true;
         btn.textContent = '⏳ Atualizando...';
         try {
@@ -3710,7 +3781,7 @@ function bindEvents() {
         } else if (res.update_available) {
           toast(`⬆️ Nova versão v${res.latest_version} disponível! Clique no indicador para atualizar.`, 6500);
         } else {
-          toast(`✅ BrightVault v${res.current_version || '0.7'} está na versão mais recente!`, 4000);
+          toast(`✅ BrightVault v${res.current_version || '0.701'} está na versão mais recente!`, 4000);
         }
       } catch (err) {
         toast('❌ ' + err.message, 5000);
